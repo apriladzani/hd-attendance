@@ -1,0 +1,6 @@
+{
+  "name": "HD Attendance & Payroll",
+  "description": "Aplikasi manajemen absensi karyawan dan kalkulasi rekap gaji harian multi-outlet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
