@@ -12,6 +12,7 @@ interface GeneratePayrollModalProps {
   summaries: EmployeePayrollSummary[];
   grandTotal: number;
   totalDays: number;
+  isSaving?: boolean;
   onClose: () => void;
   onConfirmGenerate: () => void;
 }
@@ -23,6 +24,7 @@ export const GeneratePayrollModal: React.FC<GeneratePayrollModalProps> = ({
   summaries,
   grandTotal,
   totalDays,
+  isSaving = false,
   onClose,
   onConfirmGenerate,
 }) => {
@@ -115,11 +117,12 @@ export const GeneratePayrollModal: React.FC<GeneratePayrollModalProps> = ({
           </button>
           <button
             type="button"
+            disabled={isSaving}
             onClick={onConfirmGenerate}
-            className="px-4 py-2 bg-[#D31027] hover:bg-[#B80D21] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            className="px-4 py-2 bg-[#D31027] hover:bg-[#B80D21] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-wait cursor-pointer"
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>Konfirmasi & Generate Gaji</span>
+            <span>{isSaving ? 'Menyimpan…' : 'Konfirmasi & Generate Gaji'}</span>
           </button>
         </div>
       </div>

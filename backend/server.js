@@ -8,6 +8,42 @@ const PORT = Number(process.env.PORT || 4000);
 app.use(cors());
 app.use(express.json());
 
+async function validateAdminPin(req, res, pinOverride) {
+  const providedPin = String(pinOverride ?? req.get('x-admin-pin') ?? '').trim();
+  if (!providedPin) {
+    res.status(401).json({ error: 'PIN admin diperlukan.' });
+    return false;
+  }
+  const [rows] = await pool.query(
+    'SELECT pin_code FROM admin_pins WHERE is_active = TRUE ORDER BY id DESC LIMIT 1'
+  );
+  if (!rows.length || providedPin !== String(rows[0].pin_code)) {
+    res.status(401).json({ error: 'PIN admin tidak valid.' });
+    return false;
+  }
+  return true;
+}
+
+function mapPayrollBatch(row) {
+  let details = row.details;
+  if (typeof details === 'string') {
+    try { details = JSON.parse(details); } catch { details = []; }
+  }
+  return {
+    id: String(row.id),
+    batchCode: row.batch_code,
+    generatedAt: row.generated_at,
+    periodLabel: row.period_label,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    outlet: row.outlet,
+    totalEmployees: Number(row.total_employees),
+    totalDays: Number(row.total_days),
+    grandTotal: Number(row.grand_total),
+    details: Array.isArray(details) ? details : [],
+  };
+}
+
 app.get('/api/health', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT 1 AS ok');
@@ -19,7 +55,14 @@ app.get('/api/health', async (req, res) => {
 
 app.get('/api/employees', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM employees ORDER BY id ASC');
+    const [rows] = await pool.query(`
+      SELECT e.id, e.employee_code, e.name, e.position_id,
+        COALESCE(p.name, e.position) AS position_name,
+        e.status, e.phone, e.join_date
+      FROM employees e
+      LEFT JOIN positions p ON p.id = e.position_id
+      ORDER BY e.id ASC
+    `);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch employees', detail: error.message });
@@ -27,45 +70,95 @@ app.get('/api/employees', async (req, res) => {
 });
 
 app.post('/api/employees', async (req, res) => {
-  const { employee_code, name, department, position, join_date, base_salary, status, phone, email } = req.body;
+  const { employee_code, name, position_id, join_date, status, phone, email } = req.body;
 
   try {
-    if (!employee_code || !name) {
-      return res.status(400).json({ error: 'employee_code and name are required' });
+    const nip = String(employee_code || '').trim();
+    const employeeName = String(name || '').trim();
+    const positionId = Number(position_id);
+    if (!nip || !employeeName || !Number.isInteger(positionId) || positionId <= 0) {
+      return res.status(400).json({ error: 'NIP, name, and position are required' });
     }
+    const [duplicateRows] = await pool.execute('SELECT id FROM employees WHERE employee_code = ? LIMIT 1', [nip]);
+    if (duplicateRows.length) return res.status(409).json({ error: 'NIP sudah digunakan karyawan lain.' });
+    const [positionRows] = await pool.execute('SELECT id, name FROM positions WHERE id = ? LIMIT 1', [positionId]);
+    if (!positionRows.length) return res.status(400).json({ error: 'Posisi / level tidak ditemukan.' });
 
     const [result] = await pool.execute(
-      `INSERT INTO employees (employee_code, name, department, position, join_date, base_salary, status, phone, email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [employee_code, name, department || '', position || '', join_date || new Date().toISOString().slice(0, 10), base_salary || 0, status || 'active', phone || '', email || '']
+      `INSERT INTO employees (employee_code, name, position, position_id, join_date, status, phone, email)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [nip, employeeName, positionRows[0].name, positionRows[0].id, join_date || new Date().toISOString().slice(0, 10), status === 'inactive' ? 'inactive' : 'active', phone || '', email || '']
     );
 
-    res.status(201).json({ success: true, id: result.insertId });
+    const [rows] = await pool.execute(`
+      SELECT e.id, e.employee_code, e.name, e.position_id, p.name AS position_name,
+        e.status, e.phone, e.join_date
+      FROM employees e LEFT JOIN positions p ON p.id = e.position_id WHERE e.id = ?
+    `, [result.insertId]);
+    res.status(201).json(rows[0]);
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'NIP sudah digunakan karyawan lain.' });
+    }
     res.status(500).json({ error: 'Failed to create employee', detail: error.message });
   }
 });
 
 app.put('/api/employees/:id', async (req, res) => {
-  const { employee_code, name, department, position, join_date, base_salary, status, phone, email } = req.body;
-  const ref = String(req.params.id || employee_code || '');
-  const field = /^\d+$/.test(ref) ? 'id' : 'employee_code';
-
+  const employeeId = Number(req.params.id);
+  const nip = String(req.body?.employee_code || '').trim();
+  const employeeName = String(req.body?.name || '').trim();
+  const positionId = Number(req.body?.position_id);
+  const status = String(req.body?.status || '').toLowerCase();
+  if (!Number.isInteger(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'ID internal karyawan tidak valid.' });
+  }
+  if (!nip || !employeeName || !Number.isInteger(positionId) || !['active', 'inactive'].includes(status)) {
+    return res.status(400).json({ error: 'NIP, nama, posisi, dan status karyawan wajib valid.' });
+  }
+  let connection;
   try {
-    const [result] = await pool.execute(
-      `UPDATE employees
-       SET employee_code = ?, name = ?, department = ?, position = ?, join_date = ?, base_salary = ?, status = ?, phone = ?, email = ?
-       WHERE ${field} = ?`,
-      [employee_code || ref, name, department || '', position || '', join_date || new Date().toISOString().slice(0, 10), base_salary || 0, status || 'active', phone || '', email || '', ref]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Employee not found' });
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [existing] = await connection.execute('SELECT id FROM employees WHERE id = ? FOR UPDATE', [employeeId]);
+    if (!existing.length) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Karyawan tidak ditemukan.' });
     }
-
-    res.json({ success: true, updated: result.affectedRows });
+    const [duplicateRows] = await connection.execute(
+      'SELECT id FROM employees WHERE employee_code = ? AND id <> ? LIMIT 1',
+      [nip, employeeId]
+    );
+    if (duplicateRows.length) {
+      await connection.rollback();
+      return res.status(409).json({ error: 'NIP sudah digunakan karyawan lain.' });
+    }
+    const [positionRows] = await connection.execute('SELECT id, name FROM positions WHERE id = ? LIMIT 1', [positionId]);
+    if (!positionRows.length) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Posisi / level tidak ditemukan.' });
+    }
+    await connection.execute(
+      'UPDATE employees SET employee_code = ?, name = ?, position = ?, position_id = ?, status = ? WHERE id = ?',
+      [nip, employeeName, positionRows[0].name, positionRows[0].id, status, employeeId]
+    );
+    await connection.commit();
+    const [rows] = await pool.execute(`
+      SELECT e.id, e.employee_code, e.name, e.position_id, p.name AS position_name,
+        e.status, e.phone, e.join_date
+      FROM employees e LEFT JOIN positions p ON p.id = e.position_id WHERE e.id = ?
+    `, [employeeId]);
+    res.json(rows[0]);
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch { /* transaction may not have started */ }
+    }
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'NIP sudah digunakan karyawan lain.' });
+    }
     res.status(500).json({ error: 'Failed to update employee', detail: error.message });
+  } finally {
+    connection?.release();
   }
 });
 
@@ -74,6 +167,16 @@ app.delete('/api/employees/:id', async (req, res) => {
   const field = /^\d+$/.test(ref) ? 'id' : 'employee_code';
 
   try {
+    const [usageRows] = await pool.execute(
+      `SELECT
+        (SELECT COUNT(*) FROM attendances WHERE employee_id = e.id) AS attendance_count,
+        (SELECT COUNT(*) FROM payrolls WHERE employee_id = e.id) AS payroll_count
+       FROM employees e WHERE e.${field} = ?`,
+      [ref]
+    );
+    if (usageRows.length && (Number(usageRows[0].attendance_count) > 0 || Number(usageRows[0].payroll_count) > 0)) {
+      return res.status(409).json({ error: 'Karyawan memiliki riwayat absensi atau gaji. Ubah status menjadi nonaktif agar riwayat tetap tersimpan.' });
+    }
     const [result] = await pool.execute(
       `DELETE FROM employees WHERE ${field} = ?`,
       [ref]
@@ -95,9 +198,18 @@ app.get('/api/admin-pin', async (_req, res) => {
     if (!rows.length) {
       return res.status(404).json({ error: 'No admin pin found' });
     }
-    res.json({ pin_code: rows[0].pin_code, is_active: !!rows[0].is_active });
+    res.json({ is_active: !!rows[0].is_active });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch admin pin', detail: error.message });
+  }
+});
+
+app.post('/api/admin-pin/verify', async (req, res) => {
+  try {
+    if (!await validateAdminPin(req, res, req.body?.pin_code)) return;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Verifikasi PIN gagal.', detail: error.message });
   }
 });
 
@@ -125,6 +237,76 @@ app.put('/api/admin-pin', async (req, res) => {
     res.json({ success: true, updated: result.affectedRows, pin_code: String(pin_code).trim() });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update admin pin', detail: error.message });
+  }
+});
+
+app.get('/api/payroll-batches', async (req, res) => {
+  try {
+    if (!await validateAdminPin(req, res)) return;
+    const [rows] = await pool.query(`
+      SELECT id, batch_code, generated_at, period_label,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS start_date,
+        DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date,
+        outlet, total_employees, total_days, grand_total, details
+      FROM payroll_batches
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+    `);
+    res.json(rows.map(mapPayrollBatch));
+  } catch (error) {
+    res.status(500).json({ error: 'Riwayat rekap gaji gagal dimuat.', detail: error.message });
+  }
+});
+
+app.post('/api/payroll-batches', async (req, res) => {
+  try {
+    if (!await validateAdminPin(req, res)) return;
+    const batch = req.body || {};
+    const requiredText = ['batchCode', 'generatedAt', 'periodLabel', 'startDate', 'endDate'];
+    if (requiredText.some((key) => !String(batch[key] || '').trim()) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(String(batch.startDate)) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(String(batch.endDate)) ||
+        !Array.isArray(batch.details)) {
+      return res.status(400).json({ error: 'Data rekap gaji tidak valid.' });
+    }
+    const [result] = await pool.execute(`
+      INSERT INTO payroll_batches
+        (batch_code, generated_at, period_label, start_date, end_date, outlet,
+         total_employees, total_days, grand_total, details)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      String(batch.batchCode), String(batch.generatedAt), String(batch.periodLabel),
+      batch.startDate, batch.endDate, String(batch.outlet || 'all'),
+      Math.max(0, Number(batch.totalEmployees) || 0), Math.max(0, Number(batch.totalDays) || 0),
+      Math.max(0, Number(batch.grandTotal) || 0), JSON.stringify(batch.details),
+    ]);
+    const [rows] = await pool.execute(`
+      SELECT id, batch_code, generated_at, period_label,
+        DATE_FORMAT(start_date, '%Y-%m-%d') AS start_date,
+        DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date,
+        outlet, total_employees, total_days, grand_total, details
+      FROM payroll_batches WHERE id = ?
+    `, [result.insertId]);
+    res.status(201).json(mapPayrollBatch(rows[0]));
+  } catch (error) {
+    res.status(500).json({ error: 'Rekap gaji gagal disimpan.', detail: error.message });
+  }
+});
+
+app.delete('/api/payroll-batches/:id', async (req, res) => {
+  try {
+    if (!await validateAdminPin(req, res)) return;
+    const batchId = String(req.params.id || '');
+    if (!/^\d+$/.test(batchId)) return res.status(400).json({ error: 'ID rekap gaji tidak valid.' });
+    const [result] = await pool.execute(`
+      UPDATE payroll_batches
+      SET deleted_at = CURRENT_TIMESTAMP, deleted_by = 'admin'
+      WHERE id = ? AND deleted_at IS NULL
+    `, [batchId]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Rekap gaji tidak ditemukan.' });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Rekap gaji gagal dihapus.', detail: error.message });
   }
 });
 
@@ -180,7 +362,15 @@ app.put('/api/outlets/:id', async (req, res) => {
 
 app.delete('/api/outlets/:id', async (req, res) => {
   try {
-    const [result] = await pool.execute('DELETE FROM outlets WHERE id = ?', [Number(req.params.id)]);
+    const outletId = Number(req.params.id);
+    const [attendanceRows] = await pool.execute(
+      'SELECT id FROM attendances WHERE outlet_id = ? LIMIT 1',
+      [outletId]
+    );
+    if (attendanceRows.length) {
+      return res.status(409).json({ error: 'Outlet tidak dapat dihapus karena digunakan dalam riwayat absensi.' });
+    }
+    const [result] = await pool.execute('DELETE FROM outlets WHERE id = ?', [outletId]);
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Outlet not found' });
     }
@@ -254,7 +444,12 @@ app.delete('/api/positions/:id', async (req, res) => {
 
 app.get('/api/attendance', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM attendances ORDER BY attendance_date DESC, id DESC');
+    const [rows] = await pool.query(`
+      SELECT a.*, o.name AS outlet_name
+      FROM attendances a
+      LEFT JOIN outlets o ON o.id = a.outlet_id
+      ORDER BY a.attendance_date DESC, a.id DESC
+    `);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch attendance', detail: error.message });
@@ -271,18 +466,57 @@ app.get('/api/payroll', async (req, res) => {
 });
 
 app.post('/api/attendance', async (req, res) => {
-  const { employee_id, attendance_date, check_in, check_out, work_hours, overtime_hours, status, notes } = req.body;
+  const { employee_id, attendance_date, check_in, check_out, work_hours, overtime_hours, status, notes, outlet_name } = req.body;
 
+  if (!employee_id || !attendance_date || !outlet_name) {
+    return res.status(400).json({ error: 'Employee, attendance date, and selected outlet are required.' });
+  }
+  let connection;
   try {
-    const [result] = await pool.execute(
-      `INSERT INTO attendances (employee_id, attendance_date, check_in, check_out, work_hours, overtime_hours, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [employee_id, attendance_date, check_in || null, check_out || null, work_hours || 0, overtime_hours || 0, status || 'present', notes || '']
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [employeeRows] = await connection.execute(
+      'SELECT id FROM employees WHERE id = ? FOR UPDATE',
+      [employee_id]
     );
-
+    if (!employeeRows.length) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Karyawan tidak ditemukan.' });
+    }
+    const [existingRows] = await connection.execute(
+      'SELECT id FROM attendances WHERE employee_id = ? AND attendance_date = ? LIMIT 1',
+      [employee_id, attendance_date]
+    );
+    if (existingRows.length) {
+      await connection.rollback();
+      return res.status(409).json({ error: 'Absensi karyawan untuk tanggal ini sudah tercatat.' });
+    }
+    const [outletRows] = await connection.execute(
+      'SELECT id FROM outlets WHERE name = ? LIMIT 1',
+      [String(outlet_name).trim()]
+    );
+    if (outletRows.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Outlet yang dipilih tidak ditemukan.' });
+    }
+    const outletId = outletRows[0].id;
+    const [result] = await connection.execute(
+      `INSERT INTO attendances (employee_id, outlet_id, attendance_date, check_in, check_out, work_hours, overtime_hours, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [employee_id, outletId, attendance_date, check_in || null, check_out || null, work_hours || 0, overtime_hours || 0, status || 'present', notes || '']
+    );
+    await connection.commit();
     res.status(201).json({ success: true, id: result.insertId });
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch { /* transaction may not have started */ }
+    }
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Absensi karyawan untuk tanggal ini sudah tercatat.' });
+    }
     res.status(500).json({ error: 'Failed to create attendance record', detail: error.message });
+  } finally {
+    connection?.release();
   }
 });
 

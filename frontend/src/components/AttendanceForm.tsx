@@ -13,15 +13,16 @@ import {
   Clock, 
   User, 
   Info,
-  History
+  History,
+  AlertCircle
 } from 'lucide-react';
 
 interface AttendanceFormProps {
   employees: Employee[];
   outlets: OutletItem[];
   attendanceRecords: AttendanceRecord[];
-  onClockIn: (employeeId: string, outlet: Outlet, timeStr: string) => void;
-  onClockOut: (employeeId: string, outlet: Outlet, timeStr: string) => void;
+  onClockIn: (employeeId: string, outlet: Outlet, timeStr: string) => Promise<void>;
+  onClockOut: (employeeId: string, outlet: Outlet, timeStr: string) => Promise<void>;
 }
 
 export const AttendanceForm: React.FC<AttendanceFormProps> = ({
@@ -32,8 +33,8 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
   onClockOut,
 }) => {
   // Currently selected employee
-  const [selectedEmpId, setSelectedEmpId] = useState<string>(employees[0]?.id || '');
-  const [selectedOutlet, setSelectedOutlet] = useState<Outlet>(employees[0]?.outlet || outlets[0]?.id || 'Cisalak');
+  const [selectedEmpId, setSelectedEmpId] = useState<string>(employees.find(employee => employee.status === 'active')?.id || employees[0]?.id || '');
+  const [selectedOutlet, setSelectedOutlet] = useState<Outlet>('');
   
   // Searchable dropdown state
   const [isEmployeeDropdownOpen, setIsEmployeeDropdownOpen] = useState(false);
@@ -70,24 +71,28 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
   }, [employees, selectedEmpId]);
 
   useEffect(() => {
-    if (employees.length === 0) {
+    const activeEmployees = employees.filter(employee => employee.status === 'active');
+    if (activeEmployees.length === 0) {
       setSelectedEmpId('');
       return;
     }
-    if (!employees.some(employee => employee.id === selectedEmpId)) {
-      setSelectedEmpId(employees[0].id);
+    if (!activeEmployees.some(employee => employee.id === selectedEmpId)) {
+      setSelectedEmpId(activeEmployees[0].id);
     }
   }, [employees, selectedEmpId]);
 
   // When selected employee changes, optionally set default outlet
   const handleSelectEmployee = (emp: Employee) => {
     setSelectedEmpId(emp.id);
-    setSelectedOutlet(emp.outlet);
     setIsEmployeeDropdownOpen(false);
     setSearchTerm('');
   };
 
   const todayStr = getTodayDateString();
+  const [summaryDate, setSummaryDate] = useState(todayStr);
+  useEffect(() => {
+    setSelectedOutlet('');
+  }, [todayStr]);
 
   // Find attendance record for current employee today
   const todayRecord = useMemo(() => {
@@ -103,22 +108,24 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
   }, [todayRecord]);
 
   // Button logic
-  const canClockIn = currentStatus === 'Belum Absen';
+  const canClockIn = currentStatus === 'Belum Absen' && Boolean(selectedOutlet);
   const canClockOut = currentStatus === 'Sedang Bekerja';
   const isCompleted = currentStatus === 'Sudah Pulang';
 
   // Handle Clock In
-  const handleClockIn = () => {
+  const handleClockIn = async () => {
     if (!canClockIn) return;
-    const nowHours = String(currentTime.getHours()).padStart(2, '0');
-    const nowMins = String(currentTime.getMinutes()).padStart(2, '0');
-    const timeStr = `${nowHours}:${nowMins}`;
+    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(currentTime);
     
-    onClockIn(selectedEmpId, selectedOutlet, timeStr);
-    setNotification({
-      type: 'success',
-      message: `Berhasil Absen Datang untuk ${currentEmployee.name} pada pukul ${timeStr} WIB di Outlet ${selectedOutlet}.`
-    });
+    try {
+      await onClockIn(selectedEmpId, selectedOutlet, timeStr);
+      setNotification({
+        type: 'success',
+        message: `Berhasil Absen Datang untuk ${currentEmployee.name} pada pukul ${timeStr} WIB di Outlet ${selectedOutlet}.`
+      });
+    } catch (error) {
+      setNotification({ type: 'warning', message: error instanceof Error ? error.message : 'Absensi gagal disimpan.' });
+    }
 
     setTimeout(() => {
       setNotification(null);
@@ -126,17 +133,19 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
   };
 
   // Handle Clock Out
-  const handleClockOut = () => {
+  const handleClockOut = async () => {
     if (!canClockOut) return;
-    const nowHours = String(currentTime.getHours()).padStart(2, '0');
-    const nowMins = String(currentTime.getMinutes()).padStart(2, '0');
-    const timeStr = `${nowHours}:${nowMins}`;
+    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(currentTime);
     
-    onClockOut(selectedEmpId, selectedOutlet, timeStr);
-    setNotification({
-      type: 'success',
-      message: `Berhasil Absen Pulang untuk ${currentEmployee.name} pada pukul ${timeStr} WIB. Kehadiran hari ini tercatat!`
-    });
+    try {
+      await onClockOut(selectedEmpId, selectedOutlet, timeStr);
+      setNotification({
+        type: 'success',
+        message: `Berhasil Absen Pulang untuk ${currentEmployee.name} pada pukul ${timeStr} WIB. Kehadiran hari ini tercatat!`
+      });
+    } catch (error) {
+      setNotification({ type: 'warning', message: error instanceof Error ? error.message : 'Absensi pulang gagal disimpan.' });
+    }
 
     setTimeout(() => {
       setNotification(null);
@@ -145,36 +154,37 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
 
   // Filtered employees for search
   const filteredEmployees = useMemo(() => {
-    if (!searchTerm.trim()) return employees;
+    const activeEmployees = employees.filter(employee => employee.status === 'active');
+    if (!searchTerm.trim()) return activeEmployees;
     const term = searchTerm.toLowerCase();
-    return employees.filter(
+    return activeEmployees.filter(
       e => e.name.toLowerCase().includes(term) || 
            e.nip.toLowerCase().includes(term) || 
-           e.outlet.toLowerCase().includes(term) || 
            (e.positionName && e.positionName.toLowerCase().includes(term))
     );
   }, [employees, searchTerm]);
 
-  // Recent attendance for the selected employee (up to 5 records)
-  const employeeHistory = useMemo(() => {
-    return attendanceRecords
-      .filter(r => r.employeeId === selectedEmpId)
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 5);
-  }, [attendanceRecords, selectedEmpId]);
+  const summaryRecords = useMemo(() => attendanceRecords
+    .filter(record => record.date === summaryDate)
+    .sort((a, b) => (b.clockIn || '').localeCompare(a.clockIn || '') || b.id.localeCompare(a.id)),
+  [attendanceRecords, summaryDate]);
+
+  const employeeById = useMemo(() => new Map(employees.map(employee => [employee.id, employee])), [employees]);
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-6">
       {/* Toast Notification */}
       {notification && (
-        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl flex items-center justify-between text-xs sm:text-sm shadow-xs transition-all animate-fadeIn">
+        <div className={`p-3.5 rounded-xl flex items-center justify-between text-xs sm:text-sm shadow-xs transition-all animate-fadeIn ${notification.type === 'success' ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-rose-50 border border-rose-200 text-rose-800'}`}>
           <div className="flex items-center gap-2">
-            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+            {notification.type === 'success'
+              ? <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              : <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />}
             <span className="font-medium">{notification.message}</span>
           </div>
           <button 
             onClick={() => setNotification(null)}
-            className="text-emerald-700 hover:text-emerald-900 text-xs font-semibold ml-2 cursor-pointer"
+            className={`text-xs font-semibold ml-2 cursor-pointer ${notification.type === 'success' ? 'text-emerald-700 hover:text-emerald-900' : 'text-rose-700 hover:text-rose-900'}`}
           >
             Tutup
           </button>
@@ -189,7 +199,7 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
               {/* 1. Nama Karyawan (Searchable Dropdown) */}
               <div className="relative" ref={dropdownRef}>
                 <label className="block text-xs font-semibold text-neutral-700 mb-1.5 uppercase tracking-wider">
-                  Karyawan (NIP · Nama · Outlet · Level)
+                  Karyawan (NIP · Nama · Level)
                 </label>
                 
                 <div
@@ -205,7 +215,7 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
                       {currentEmployee?.name}
                     </span>
                     <span className="text-[11px] sm:text-xs text-neutral-500 truncate hidden xs:inline">
-                      · {currentEmployee?.positionName} ({currentEmployee?.outlet})
+                      · {currentEmployee?.positionName}
                     </span>
                   </div>
                   <ChevronDown className="w-4 h-4 text-neutral-400 shrink-0" />
@@ -252,7 +262,7 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
                                 <p className="font-semibold text-neutral-900 truncate">{emp.name}</p>
                               </div>
                               <p className="text-[10px] sm:text-[11px] text-neutral-500 mt-0.5 truncate">
-                                {emp.positionName} · Outlet {emp.outlet}
+                                {emp.positionName}
                               </p>
                             </div>
                             {emp.id === selectedEmpId && (
@@ -269,14 +279,16 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
             {/* 2. Outlet Dropdown (Cukup nama outlet) */}
             <div>
               <label className="block text-xs font-semibold text-neutral-700 mb-1.5 uppercase tracking-wider">
-                Outlet Penugasan
+                Outlet Penugasan *
               </label>
               <div className="relative">
                 <select
+                  required
                   value={selectedOutlet}
                   onChange={(e) => setSelectedOutlet(e.target.value as Outlet)}
                   className="w-full appearance-none px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-lg text-sm font-semibold text-[#171717] focus:outline-none focus:border-[#D31027] cursor-pointer"
                 >
+                  <option value="">Pilih outlet tempat bekerja</option>
                   {outlets.map(outlet => (
                     <option key={outlet.id} value={outlet.name}>
                       {outlet.name}
@@ -370,161 +382,43 @@ export const AttendanceForm: React.FC<AttendanceFormProps> = ({
         </form>
       </div>
 
-      {/* Attendance Information Summary for Selected Employee */}
-      <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-xs">
-        <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-b border-neutral-200 bg-neutral-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+      <section className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-xs">
+        <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-b border-neutral-200 bg-neutral-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <History className="w-4 h-4 text-neutral-500 shrink-0" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-700 truncate">
-              Ringkasan Absensi: {currentEmployee.name}
-            </h3>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-700">Ringkasan Absensi Karyawan</h3>
           </div>
-          <span className="text-[11px] text-neutral-500">
-            Outlet Utama: <strong className="text-neutral-700">{currentEmployee.outlet}</strong>
-          </span>
-        </div>
-
-        {/* Mobile View: High-Density Responsive Cards (sm:hidden) */}
-        <div className="block sm:hidden divide-y divide-neutral-100 p-3 space-y-3">
-          {/* Today's Record / Status Card */}
-          <div className="p-3.5 rounded-xl border border-neutral-200/90 bg-neutral-50/50 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-800 shrink-0">
-                  {currentEmployee.nip}
-                </span>
-                <span className="text-xs font-bold text-neutral-900 truncate">
-                  {formatIndonesianDate(todayStr)}
-                </span>
-                <span className="text-[10px] font-bold text-[#D31027] shrink-0">(Hari Ini)</span>
-              </div>
-              <AttendanceStatusBadge status={todayRecord ? todayRecord.status : 'Belum Absen'} />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2 bg-white rounded-lg border border-neutral-200/80">
-                <span className="text-[10px] text-neutral-400 font-semibold uppercase block">Jam Datang</span>
-                <span className="font-mono font-bold text-neutral-800 text-sm">
-                  {todayRecord?.clockIn || '—'}
-                </span>
-              </div>
-              <div className="p-2 bg-white rounded-lg border border-neutral-200/80">
-                <span className="text-[10px] text-neutral-400 font-semibold uppercase block">Jam Pulang</span>
-                <span className="font-mono font-bold text-neutral-800 text-sm">
-                  {todayRecord?.clockOut || '—'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-0.5">
-              <span>Outlet: <strong className="text-neutral-700">{todayRecord?.outlet || selectedOutlet}</strong></span>
-              <span className="px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium border border-neutral-200 text-[10px]">
-                {currentEmployee.positionName}
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="attendance-summary-date" className="text-[11px] text-neutral-600 whitespace-nowrap">Pilih Tanggal:</label>
+            <input id="attendance-summary-date" type="date" value={summaryDate} onChange={event => setSummaryDate(event.target.value)}
+              className="px-2.5 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-neutral-800 focus:outline-none focus:border-[#D31027]" />
+            <button type="button" onClick={() => setSummaryDate(getTodayDateString())}
+              className="px-2.5 py-1.5 bg-white border border-neutral-200 hover:bg-neutral-100 rounded-lg text-xs font-semibold text-neutral-700 cursor-pointer">Hari Ini</button>
           </div>
-
-          {/* Past 3 records on mobile */}
-          {employeeHistory
-            .filter(r => r.date !== todayStr)
-            .slice(0, 3)
-            .map(r => (
-              <div key={r.id} className="p-3 rounded-lg border border-neutral-200/60 bg-white space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-neutral-800">
-                    {formatIndonesianDate(r.date)}
-                  </span>
-                  <AttendanceStatusBadge status={r.status} />
-                </div>
-                <div className="flex items-center justify-between text-neutral-500 text-[11px]">
-                  <span>Masuk: <strong className="font-mono text-neutral-800">{r.clockIn || '-'}</strong> · Pulang: <strong className="font-mono text-neutral-800">{r.clockOut || '-'}</strong></span>
-                  <span>{r.outlet}</span>
-                </div>
-              </div>
-            ))}
         </div>
-
-        {/* Desktop / Tablet View: Full Table (hidden sm:block) */}
-        <div className="hidden sm:block overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50 text-neutral-600 font-semibold">
-                <th className="py-2.5 px-3.5">NIP</th>
-                <th className="py-2.5 px-3.5">Nama Karyawan</th>
-                <th className="py-2.5 px-3.5">Outlet</th>
-                <th className="py-2.5 px-3.5">Level / Posisi</th>
-                <th className="py-2.5 px-3.5">Tanggal</th>
-                <th className="py-2.5 px-3.5 text-center">Jam Datang</th>
-                <th className="py-2.5 px-3.5 text-center">Jam Pulang</th>
-                <th className="py-2.5 px-3.5 text-center">Status</th>
-              </tr>
-            </thead>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[850px] text-left text-xs">
+            <thead><tr className="border-b border-neutral-200 bg-neutral-50 text-neutral-600 font-semibold">
+              <th className="py-2.5 px-3.5">NIP</th><th className="py-2.5 px-3.5">Nama Karyawan</th><th className="py-2.5 px-3.5">Outlet</th><th className="py-2.5 px-3.5">Level / Posisi</th><th className="py-2.5 px-3.5">Tanggal</th><th className="py-2.5 px-3.5 text-center">Jam Datang</th><th className="py-2.5 px-3.5 text-center">Jam Pulang</th><th className="py-2.5 px-3.5 text-center">Status</th>
+            </tr></thead>
             <tbody className="divide-y divide-neutral-100">
-              {todayRecord ? (
-                <tr className="bg-red-50/30 font-medium">
-                  <td className="py-3 px-3.5 font-mono font-bold text-neutral-800">{todayRecord.nip || currentEmployee.nip}</td>
-                  <td className="py-3 px-3.5 font-semibold text-neutral-900">
-                    {todayRecord.employeeName}
-                    <span className="ml-1.5 text-[10px] text-[#D31027] font-semibold">(Hari Ini)</span>
-                  </td>
-                  <td className="py-3 px-3.5 text-neutral-600">{todayRecord.outlet}</td>
-                  <td className="py-3 px-3.5 text-neutral-700">
-                    <span className="px-1.5 py-0.5 rounded text-[11px] bg-neutral-100 font-medium border border-neutral-200">
-                      {currentEmployee.positionName}
-                    </span>
-                  </td>
-                  <td className="py-3 px-3.5 text-neutral-600">{formatIndonesianDate(todayRecord.date)}</td>
-                  <td className="py-3 px-3.5 text-center font-mono tabular-nums text-neutral-800">
-                    {todayRecord.clockIn || '-'}
-                  </td>
-                  <td className="py-3 px-3.5 text-center font-mono tabular-nums text-neutral-800">
-                    {todayRecord.clockOut || '-'}
-                  </td>
-                  <td className="py-3 px-3.5 text-center">
-                    <AttendanceStatusBadge status={todayRecord.status} />
-                  </td>
-                </tr>
-              ) : (
-                <tr className="text-neutral-500">
-                  <td className="py-3 px-3.5 font-mono font-bold text-neutral-800">{currentEmployee.nip}</td>
-                  <td className="py-3 px-3.5 font-semibold text-neutral-900">{currentEmployee.name}</td>
-                  <td className="py-3 px-3.5 text-neutral-600">{selectedOutlet}</td>
-                  <td className="py-3 px-3.5 text-neutral-700">
-                    <span className="px-1.5 py-0.5 rounded text-[11px] bg-neutral-100 font-medium border border-neutral-200">
-                      {currentEmployee.positionName}
-                    </span>
-                  </td>
-                  <td className="py-3 px-3.5 text-neutral-600">{formatIndonesianDate(todayStr)} (Hari Ini)</td>
-                  <td className="py-3 px-3.5 text-center font-mono text-neutral-400">-</td>
-                  <td className="py-3 px-3.5 text-center font-mono text-neutral-400">-</td>
-                  <td className="py-3 px-3.5 text-center">
-                    <AttendanceStatusBadge status="Belum Absen" />
-                  </td>
-                </tr>
-              )}
-
-              {/* Prior historical records for this employee */}
-              {employeeHistory
-                .filter(r => r.date !== todayStr)
-                .slice(0, 3)
-                .map(r => (
-                  <tr key={r.id} className="hover:bg-neutral-50/50 text-neutral-600">
-                    <td className="py-2.5 px-3.5 font-mono font-bold text-neutral-700">{r.nip || currentEmployee.nip}</td>
-                    <td className="py-2.5 px-3.5 text-neutral-800">{r.employeeName}</td>
-                    <td className="py-2.5 px-3.5">{r.outlet}</td>
-                    <td className="py-2.5 px-3.5 text-neutral-500">{currentEmployee.positionName}</td>
-                    <td className="py-2.5 px-3.5">{formatIndonesianDate(r.date)}</td>
-                    <td className="py-2.5 px-3.5 text-center font-mono tabular-nums">{r.clockIn || '-'}</td>
-                    <td className="py-2.5 px-3.5 text-center font-mono tabular-nums">{r.clockOut || '-'}</td>
-                    <td className="py-2.5 px-3.5 text-center">
-                      <AttendanceStatusBadge status={r.status} />
-                    </td>
-                  </tr>
-                ))}
+              {summaryRecords.length ? summaryRecords.map(record => {
+                const employee = employeeById.get(record.employeeId);
+                return <tr key={record.id} className="hover:bg-neutral-50/50">
+                  <td className="py-3 px-3.5 font-mono font-bold text-neutral-800">{record.nip || employee?.nip || '-'}</td>
+                  <td className="py-3 px-3.5 font-semibold text-neutral-900">{record.employeeName}</td>
+                  <td className="py-3 px-3.5 text-neutral-600">{record.outlet}</td>
+                  <td className="py-3 px-3.5 text-neutral-700">{employee?.positionName || '-'}</td>
+                  <td className="py-3 px-3.5 text-neutral-600">{formatIndonesianDate(record.date)}</td>
+                  <td className="py-3 px-3.5 text-center font-mono tabular-nums">{record.clockIn || '-'}</td>
+                  <td className="py-3 px-3.5 text-center font-mono tabular-nums">{record.clockOut || '-'}</td>
+                  <td className="py-3 px-3.5 text-center"><AttendanceStatusBadge status={record.status} /></td>
+                </tr>;
+              }) : <tr><td colSpan={8} className="py-10 text-center text-neutral-500">Belum ada data absensi pada tanggal ini.</td></tr>}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
     </div>
   );
 };

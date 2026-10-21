@@ -8,7 +8,6 @@ import { Employee, AttendanceRecord, AttendanceStatus, GeneratedPayrollRecord, O
 import { 
   INITIAL_EMPLOYEES, 
   INITIAL_ATTENDANCE, 
-  INITIAL_GENERATED_PAYROLLS,
   INITIAL_OUTLETS,
   INITIAL_POSITIONS
 } from './data/mockData';
@@ -20,13 +19,13 @@ import { PayrollPage } from './components/PayrollPage';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
-const normalizeEmployee = (row: any): Employee => ({
+const normalizeEmployee = (row: any, positions: PositionLevel[] = []): Employee => ({
   id: String(row.id ?? row.employee_id ?? row.employeeCode ?? row.employee_code ?? ''),
   nip: String(row.employee_code ?? row.nip ?? `HD-${String(row.id ?? 0).padStart(3, '0')}`),
   name: String(row.name ?? 'Unknown Employee'),
-  outlet: String(row.department ?? row.outlet ?? 'Cisalak'),
-  positionId: String(row.position ?? row.positionId ?? 'pos-crew-1'),
-  positionName: String(row.position ?? row.positionName ?? 'Crew/1'),
+  positionId: String(row.position_id ?? row.positionId ?? positions.find(position => position.name === (row.position_name ?? row.position))?.id ?? row.position ?? 'pos-crew-1'),
+  positionName: String(row.position_name ?? row.positionName ?? row.position ?? 'Crew/1'),
+  status: String(row.status ?? 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active',
   phone: row.phone ?? undefined,
   joinDate: row.join_date ?? row.joinDate ?? new Date().toISOString().slice(0, 10),
 });
@@ -62,6 +61,7 @@ const normalizeAttendanceDate = (value: unknown): string => {
 const normalizeAttendance = (row: any, employees: Employee[] = []): AttendanceRecord => {
   const employeeId = String(row.employee_id ?? row.employeeId ?? '0');
   const employee = employees.find(item => item.id === employeeId);
+  const outletName = row.outlet_name ?? row.outlet;
   const clockInValue = row.check_in ?? row.clockIn ?? null;
   const clockOutValue = row.check_out ?? row.clockOut ?? null;
   const clockIn = clockInValue ? String(clockInValue).slice(0, 5) : null;
@@ -83,9 +83,10 @@ const normalizeAttendance = (row: any, employees: Employee[] = []): AttendanceRe
   return {
     id: String(row.id ?? `ATT-${employeeId}-${row.attendance_date ?? Date.now()}`),
     employeeId,
+    outletId: row.outlet_id == null ? undefined : String(row.outlet_id),
     nip: String(row.nip ?? row.employee_code ?? employee?.nip ?? `HD-${employeeId.padStart(3, '0')}`),
     employeeName: String(row.employeeName ?? row.employee_name ?? row.name ?? employee?.name ?? 'Karyawan'),
-    outlet: String(row.outlet ?? row.outlet_name ?? employee?.outlet ?? 'Cisalak'),
+    outlet: outletName && !/^\d+$/.test(String(outletName)) ? String(outletName) : 'Outlet tidak ditemukan',
     date: normalizeAttendanceDate(row.attendance_date ?? row.date),
     clockIn,
     clockOut,
@@ -102,35 +103,47 @@ export default function App() {
 
   // Admin PIN Protection State for 'payroll' page (Default mock PIN: 1234)
   const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
-  const [adminPin, setAdminPin] = useState<string>('1234');
+  const [adminPin, setAdminPin] = useState<string>('');
 
   // Application Data State (Dynamic master data)
   const [outlets, setOutlets] = useState<OutletItem[]>(INITIAL_OUTLETS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
   const [positions, setPositions] = useState<PositionLevel[]>(INITIAL_POSITIONS);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>(INITIAL_ATTENDANCE);
-  const [generatedBatches, setGeneratedBatches] = useState<GeneratedPayrollRecord[]>(INITIAL_GENERATED_PAYROLLS);
+  const [generatedBatches, setGeneratedBatches] = useState<GeneratedPayrollRecord[]>([]);
+  const [isLoadingBackendData, setIsLoadingBackendData] = useState(true);
+  const [backendLoadError, setBackendLoadError] = useState<string | null>(null);
 
   const todayStr = getTodayDateString();
 
   useEffect(() => {
     const loadFromBackend = async () => {
       try {
-        const [employeeRes, attendanceRes, outletRes, positionRes, pinRes] = await Promise.all([
+        const [employeeRes, attendanceRes, outletRes, positionRes] = await Promise.all([
           fetch(`${API_BASE}/api/employees`),
           fetch(`${API_BASE}/api/attendance`),
           fetch(`${API_BASE}/api/outlets`),
           fetch(`${API_BASE}/api/positions`),
-          fetch(`${API_BASE}/api/admin-pin`),
         ]);
+
+        let loadedPositions = positions;
+        if (positionRes.ok) {
+          const positionRows = await positionRes.json();
+          if (Array.isArray(positionRows) && positionRows.length > 0) {
+            loadedPositions = positionRows.map(normalizePosition);
+            setPositions(loadedPositions);
+          }
+        }
 
         let loadedEmployees = employees;
         if (employeeRes.ok) {
           const employeeRows = await employeeRes.json();
           if (Array.isArray(employeeRows)) {
-            loadedEmployees = employeeRows.map(normalizeEmployee);
+            loadedEmployees = employeeRows.map((row: any) => normalizeEmployee(row, loadedPositions));
             setEmployees(loadedEmployees);
           }
+        } else {
+          throw new Error('Data karyawan tidak dapat dimuat dari server.');
         }
 
         if (attendanceRes.ok) {
@@ -138,6 +151,8 @@ export default function App() {
           if (Array.isArray(attendanceRows)) {
             setAttendanceRecords(attendanceRows.map((row: any) => normalizeAttendance(row, loadedEmployees)));
           }
+        } else {
+          throw new Error('Data absensi tidak dapat dimuat dari server.');
         }
 
         if (outletRes.ok) {
@@ -147,26 +162,37 @@ export default function App() {
           }
         }
 
-        if (positionRes.ok) {
-          const positionRows = await positionRes.json();
-          if (Array.isArray(positionRows) && positionRows.length > 0) {
-            setPositions(positionRows.map(normalizePosition));
-          }
-        }
-
-        if (pinRes.ok) {
-          const pinData = await pinRes.json();
-          if (pinData && pinData.pin_code) {
-            setAdminPin(String(pinData.pin_code));
-          }
-        }
-      } catch {
-        // Fallback to mock data if backend is not reachable.
+        setBackendLoadError(null);
+      } catch (error) {
+        setBackendLoadError(error instanceof Error
+          ? `${error.message} Tampilan memakai data lokal sementara; perubahan belum tersimpan.`
+          : 'Server tidak dapat dihubungi. Tampilan memakai data lokal sementara; perubahan belum tersimpan.');
+      } finally {
+        setIsLoadingBackendData(false);
       }
     };
 
     loadFromBackend();
   }, []);
+
+  useEffect(() => {
+    if (!isAdminUnlocked || !adminPin) return;
+    let active = true;
+    const loadPayrollBatches = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/payroll-batches`, {
+          headers: { 'x-admin-pin': adminPin },
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.detail || data?.error || 'Riwayat rekap gaji tidak dapat dimuat.');
+        if (active && Array.isArray(data)) setGeneratedBatches(data);
+      } catch {
+        // Keep local mock history available when running the frontend without a backend.
+      }
+    };
+    loadPayrollBatches();
+    return () => { active = false; };
+  }, [isAdminUnlocked, adminPin]);
 
   const handleSaveEmployeeToBackend = async (nextEmployees: Employee[]) => {
     const previous = employees;
@@ -180,71 +206,65 @@ export default function App() {
       return Boolean(oldItem) && JSON.stringify(oldItem) !== JSON.stringify(item);
     });
 
-    setEmployees(nextEmployees);
-
-    for (const employee of removed) {
+    const request = async (url: string, method: string, payload?: unknown) => {
+      let response: Response;
       try {
-        await fetch(`${API_BASE}/api/employees/${encodeURIComponent(employee.nip || employee.id)}`, {
-          method: 'DELETE',
+        response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          ...(payload ? { body: JSON.stringify(payload) } : {}),
         });
       } catch {
-        // silent fail for local UI fallback
+        throw new Error('Server tidak dapat dihubungi. Perubahan karyawan belum disimpan.');
       }
-    }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || 'Perubahan karyawan gagal disimpan.');
+      }
+      return response.status === 204 ? null : response.json().catch(() => null);
+    };
 
-    for (const employee of added) {
-      try {
-        const payload = {
+    try {
+      for (const employee of removed) {
+        await request(`${API_BASE}/api/employees/${encodeURIComponent(employee.id)}`, 'DELETE');
+      }
+      for (const employee of added) {
+        await request(`${API_BASE}/api/employees`, 'POST', {
           employee_code: employee.nip,
           name: employee.name,
-          department: employee.outlet || '',
-          position: employee.positionName,
-          join_date: employee.joinDate ?? new Date().toISOString().slice(0, 10),
-          base_salary: 0,
-          status: 'active',
+          position_id: employee.positionId,
+          status: employee.status,
+          join_date: employee.joinDate ?? getTodayDateString(),
           phone: employee.phone ?? '',
           email: `${employee.name.toLowerCase().replace(/\s+/g, '.')}@example.com`,
-        };
-
-        await fetch(`${API_BASE}/api/employees`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
         });
-      } catch {
-        // silent fail for local UI fallback
       }
-    }
-
-    for (const employee of updated) {
-      try {
-        const payload = {
+      for (const employee of updated) {
+        await request(`${API_BASE}/api/employees/${encodeURIComponent(employee.id)}`, 'PUT', {
           employee_code: employee.nip,
           name: employee.name,
-          department: employee.outlet || '',
-          position: employee.positionName,
-          join_date: employee.joinDate ?? new Date().toISOString().slice(0, 10),
-          base_salary: 0,
-          status: 'active',
-          phone: employee.phone ?? '',
-          email: `${employee.name.toLowerCase().replace(/\s+/g, '.')}@example.com`,
-        };
-
-        await fetch(`${API_BASE}/api/employees/${encodeURIComponent(employee.nip || employee.id)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          position_id: employee.positionId,
+          status: employee.status,
         });
-      } catch {
-        // silent fail for local UI fallback
       }
+      const refreshed = await request(`${API_BASE}/api/employees`, 'GET');
+      if (!Array.isArray(refreshed)) throw new Error('Server mengembalikan data karyawan yang tidak valid.');
+      setEmployees(refreshed.map((row: any) => normalizeEmployee(row, positions)));
+    } catch (error) {
+      try {
+        const refreshed = await fetch(`${API_BASE}/api/employees`);
+        if (refreshed.ok) setEmployees((await refreshed.json()).map((row: any) => normalizeEmployee(row, positions)));
+      } catch {
+        // Keep current UI state when the backend is unreachable.
+      }
+      throw error;
     }
   };
 
   // Handle Absen Datang (Clock In)
   const handleClockIn = async (employeeId: string, outlet: Outlet, timeStr: string) => {
     const emp = employees.find(e => e.id === employeeId);
-    if (!emp) return;
+    if (!emp) throw new Error('Karyawan tidak ditemukan.');
     const existingRecord = attendanceRecords.find(r => r.employeeId === employeeId && r.date === todayStr);
 
     const localRecord: AttendanceRecord = {
@@ -282,6 +302,7 @@ export default function App() {
         body: JSON.stringify({
           employee_id: Number(employeeId.replace(/\D/g, '')) || 1,
           attendance_date: todayStr,
+          outlet_name: outlet,
           check_in: timeStr,
           check_out: null,
           work_hours: 0,
@@ -290,7 +311,11 @@ export default function App() {
           notes: `Absen datang pukul ${timeStr} WIB`,
         }),
       });
-      if (response.ok && !isPersisted) {
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || 'Absen datang gagal disimpan.');
+      }
+      if (!isPersisted) {
         const result = await response.json();
         if (result.id) {
           setAttendanceRecords(prev => prev.map(record => record.id === localRecord.id
@@ -298,8 +323,13 @@ export default function App() {
             : record));
         }
       }
-    } catch {
-      // ignore API failure for local UI state
+    } catch (error) {
+      const previousRecords = attendanceRecords.filter(record => record.employeeId === employeeId && record.date === todayStr);
+      setAttendanceRecords(prev => [
+        ...prev.filter(record => record.employeeId !== employeeId || record.date !== todayStr),
+        ...previousRecords,
+      ]);
+      throw error instanceof Error ? error : new Error('Absen datang gagal disimpan.');
     }
   };
 
@@ -315,7 +345,6 @@ export default function App() {
         const existing = updated[existingIndex];
         updated[existingIndex] = {
           ...existing,
-          outlet,
           clockOut: timeStr,
           status: 'Sudah Pulang',
           isValid: true,
@@ -351,6 +380,7 @@ export default function App() {
         body: JSON.stringify({
           employee_id: Number(employeeId.replace(/\D/g, '')) || 1,
           attendance_date: todayStr,
+          outlet_name: outlet,
           check_in: existingRecord?.clockIn || '08:00',
           check_out: timeStr,
           work_hours: 8,
@@ -359,7 +389,11 @@ export default function App() {
           notes: `Hadir lengkap (${timeStr})`,
         }),
       });
-      if (response.ok && !isPersisted) {
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || 'Absen pulang gagal disimpan.');
+      }
+      if (!isPersisted) {
         const result = await response.json();
         if (result.id) {
           setAttendanceRecords(prev => prev.map(record => record.id === localRecordId
@@ -367,8 +401,13 @@ export default function App() {
             : record));
         }
       }
-    } catch {
-      // ignore API failure for local UI state
+    } catch (error) {
+      const previousRecords = attendanceRecords.filter(record => record.employeeId === employeeId && record.date === todayStr);
+      setAttendanceRecords(prev => [
+        ...prev.filter(record => record.employeeId !== employeeId || record.date !== todayStr),
+        ...previousRecords,
+      ]);
+      throw error instanceof Error ? error : new Error('Absen pulang gagal disimpan.');
     }
   };
 
@@ -418,8 +457,35 @@ export default function App() {
   };
 
   // Add new generated payroll batch
-  const handleAddGeneratedBatch = (batch: GeneratedPayrollRecord) => {
-    setGeneratedBatches(prev => [batch, ...prev]);
+  const handleAddGeneratedBatch = async (batch: GeneratedPayrollRecord) => {
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}/api/payroll-batches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-pin': adminPin },
+        body: JSON.stringify(batch),
+      });
+    } catch {
+      throw new Error('Server tidak dapat dihubungi. Rekap gaji belum tersimpan.');
+    }
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(result?.detail || result?.error || 'Rekap gaji gagal disimpan.');
+    setGeneratedBatches(prev => [result as GeneratedPayrollRecord, ...prev]);
+  };
+
+  const handleDeleteGeneratedBatch = async (batchId: string) => {
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}/api/payroll-batches/${encodeURIComponent(batchId)}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-pin': adminPin },
+      });
+    } catch {
+      throw new Error('Server tidak dapat dihubungi. Rekap gaji belum dihapus.');
+    }
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(result?.detail || result?.error || 'Rekap gaji gagal dihapus.');
+    setGeneratedBatches(prev => prev.filter(batch => batch.id !== batchId));
   };
 
   const handleUpdateOutlets = async (nextOutlets: OutletItem[]) => {
@@ -434,39 +500,36 @@ export default function App() {
       return Boolean(oldItem) && JSON.stringify(oldItem) !== JSON.stringify(item);
     });
 
-    setOutlets(nextOutlets);
+    const save = async (url: string, method: string, name?: string) => {
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          ...(name ? { body: JSON.stringify({ name }) } : {}),
+        });
+      } catch {
+        throw new Error('Server tidak dapat dihubungi. Perubahan outlet belum disimpan.');
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || 'Perubahan outlet gagal disimpan.');
+      }
+    };
 
     for (const outlet of removed) {
-      try {
-        await fetch(`${API_BASE}/api/outlets/${encodeURIComponent(outlet.id)}`, { method: 'DELETE' });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/outlets/${encodeURIComponent(outlet.id)}`, 'DELETE');
     }
-
     for (const outlet of added) {
-      try {
-        await fetch(`${API_BASE}/api/outlets`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: outlet.name }),
-        });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/outlets`, 'POST', outlet.name);
     }
-
     for (const outlet of updated) {
-      try {
-        await fetch(`${API_BASE}/api/outlets/${encodeURIComponent(outlet.id)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: outlet.name }),
-        });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/outlets/${encodeURIComponent(outlet.id)}`, 'PUT', outlet.name);
     }
+    const response = await fetch(`${API_BASE}/api/outlets`);
+    if (!response.ok) throw new Error('Data outlet gagal dimuat ulang setelah perubahan.');
+    const rows = await response.json();
+    setOutlets(Array.isArray(rows) ? rows.map(normalizeOutlet) : nextOutlets);
   };
 
   const handleUpdatePositions = async (nextPositions: PositionLevel[]) => {
@@ -481,38 +544,42 @@ export default function App() {
       return Boolean(oldItem) && JSON.stringify(oldItem) !== JSON.stringify(item);
     });
 
-    setPositions(nextPositions);
-
+    const save = async (url: string, method: string, position?: PositionLevel) => {
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          ...(position ? { body: JSON.stringify({ name: position.name, dailyWage: position.dailyWage }) } : {}),
+        });
+      } catch {
+        throw new Error('Server tidak dapat dihubungi. Perubahan posisi belum disimpan.');
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.error || 'Perubahan posisi gagal disimpan.');
+      }
+    };
     for (const position of removed) {
-      try {
-        await fetch(`${API_BASE}/api/positions/${encodeURIComponent(position.id)}`, { method: 'DELETE' });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/positions/${encodeURIComponent(position.id)}`, 'DELETE');
     }
-
     for (const position of added) {
-      try {
-        await fetch(`${API_BASE}/api/positions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: position.name, dailyWage: position.dailyWage }),
-        });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/positions`, 'POST', position);
     }
-
     for (const position of updated) {
-      try {
-        await fetch(`${API_BASE}/api/positions/${encodeURIComponent(position.id)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: position.name, dailyWage: position.dailyWage }),
-        });
-      } catch {
-        // silent fail
-      }
+      await save(`${API_BASE}/api/positions/${encodeURIComponent(position.id)}`, 'PUT', position);
+    }
+    const [positionResponse, employeeResponse] = await Promise.all([
+      fetch(`${API_BASE}/api/positions`),
+      fetch(`${API_BASE}/api/employees`),
+    ]);
+    if (!positionResponse.ok || !employeeResponse.ok) {
+      throw new Error('Data posisi atau karyawan gagal dimuat ulang.');
+    }
+    const [positionRows, employeeRows] = await Promise.all([positionResponse.json(), employeeResponse.json()]);
+    setPositions(Array.isArray(positionRows) ? positionRows.map(normalizePosition) : nextPositions);
+    if (Array.isArray(employeeRows)) {
+      setEmployees(employeeRows.map((row: any) => normalizeEmployee(row, positionRows.map(normalizePosition))));
     }
   };
 
@@ -531,7 +598,7 @@ export default function App() {
   };
 
   const handleUpdateEmployees = (nextEmployees: Employee[]) => {
-    handleSaveEmployeeToBackend(nextEmployees);
+    return handleSaveEmployeeToBackend(nextEmployees);
   };
 
   return (
@@ -543,6 +610,12 @@ export default function App() {
         isAdminUnlocked={isAdminUnlocked}
         onLockAdmin={() => setIsAdminUnlocked(false)}
       />
+
+      {(isLoadingBackendData || backendLoadError) && (
+        <div className={`px-4 py-2 text-center text-xs ${backendLoadError ? 'bg-amber-50 text-amber-800 border-b border-amber-200' : 'bg-neutral-100 text-neutral-600'}`}>
+          {isLoadingBackendData ? 'Memuat data karyawan dan absensi…' : backendLoadError}
+        </div>
+      )}
 
       {/* Main View Area */}
       <div className="flex-1">
@@ -557,8 +630,7 @@ export default function App() {
         ) : (
           !isAdminUnlocked ? (
             <PinAccess 
-              adminPin={adminPin} 
-              onUnlock={() => setIsAdminUnlocked(true)} 
+              onUnlock={(pin) => { setAdminPin(pin); setIsAdminUnlocked(true); }}
             />
           ) : (
             <PayrollPage
@@ -568,10 +640,11 @@ export default function App() {
               attendanceRecords={attendanceRecords}
               generatedBatches={generatedBatches}
               adminPin={adminPin}
-              onLock={() => setIsAdminUnlocked(false)}
+              onLock={() => { setIsAdminUnlocked(false); setAdminPin(''); }}
               onVerifyRecord={handleVerifyRecord}
               onDeleteAttendanceRecord={handleDeleteAttendanceRecord}
               onAddGeneratedBatch={handleAddGeneratedBatch}
+              onDeleteGeneratedBatch={handleDeleteGeneratedBatch}
               onUpdateOutlets={handleUpdateOutlets}
               onUpdateEmployees={handleUpdateEmployees}
               onUpdatePositions={handleUpdatePositions}

@@ -30,7 +30,8 @@ import {
   X,
   Layers,
   KeyRound,
-  FileCheck
+  FileCheck,
+  Trash2
 } from 'lucide-react';
 
 interface PayrollPageProps {
@@ -43,10 +44,11 @@ interface PayrollPageProps {
   onLock: () => void;
   onVerifyRecord: (recordId: string) => void;
   onDeleteAttendanceRecord: (recordId: string) => Promise<void>;
-  onAddGeneratedBatch: (batch: GeneratedPayrollRecord) => void;
-  onUpdateOutlets: (outlets: OutletItem[]) => void;
-  onUpdateEmployees: (employees: Employee[]) => void;
-  onUpdatePositions: (positions: PositionLevel[]) => void;
+  onAddGeneratedBatch: (batch: GeneratedPayrollRecord) => Promise<void>;
+  onDeleteGeneratedBatch: (batchId: string) => Promise<void>;
+  onUpdateOutlets: (outlets: OutletItem[]) => Promise<void>;
+  onUpdateEmployees: (employees: Employee[]) => Promise<void>;
+  onUpdatePositions: (positions: PositionLevel[]) => Promise<void>;
   onUpdatePin: (newPin: string) => void;
 }
 
@@ -61,6 +63,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
   onVerifyRecord,
   onDeleteAttendanceRecord,
   onAddGeneratedBatch,
+  onDeleteGeneratedBatch,
   onUpdateOutlets,
   onUpdateEmployees,
   onUpdatePositions,
@@ -104,6 +107,9 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
   const [isMasterDataModalOpen, setIsMasterDataModalOpen] = useState(false);
   const [masterDataInitialTab, setMasterDataInitialTab] = useState<'outlets' | 'employees' | 'positions'>('outlets');
   const [isChangePinModalOpen, setIsChangePinModalOpen] = useState(false);
+  const [batchPendingDelete, setBatchPendingDelete] = useState<GeneratedPayrollRecord | null>(null);
+  const [isSavingBatch, setIsSavingBatch] = useState(false);
+  const [isDeletingBatch, setIsDeletingBatch] = useState(false);
   
   // Success notification banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -133,17 +139,23 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
 
     // 1. Filter employees by outlet & search
     let targetEmployees = [...employees];
-    if (filters.outlet !== 'all') {
-      targetEmployees = targetEmployees.filter(e => e.outlet === filters.outlet);
-    }
     if (filters.search.trim()) {
       const term = filters.search.toLowerCase();
       targetEmployees = targetEmployees.filter(e => 
         e.nip.toLowerCase().includes(term) ||
         e.name.toLowerCase().includes(term) || 
-        e.outlet.toLowerCase().includes(term) ||
-        e.positionName.toLowerCase().includes(term)
+        e.positionName.toLowerCase().includes(term) ||
+        attendanceRecords.some(record => record.employeeId === e.id &&
+          record.date >= filters.startDate && record.date <= filters.endDate &&
+          record.outlet.toLowerCase().includes(term))
       );
+    }
+    if (filters.outlet !== 'all') {
+      targetEmployees = targetEmployees.filter(employee => attendanceRecords.some(record =>
+        record.employeeId === employee.id &&
+        record.date >= filters.startDate && record.date <= filters.endDate &&
+        record.outlet === filters.outlet
+      ));
     }
 
     // 2. Compute summary for each employee
@@ -203,7 +215,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
         employeeId: emp.id,
         nip: emp.nip,
         employeeName: emp.name,
-        outlet: emp.outlet,
+        outlet: recordsInRange[0]?.outlet || (filters.outlet === 'all' ? '-' : filters.outlet),
         positionName,
         slipNumber,
         periodLabel,
@@ -284,7 +296,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
   };
 
   // Handle Generate Gaji Confirmation (Prevent duplicate batch for same period)
-  const handleConfirmGenerate = () => {
+  const handleConfirmGenerate = async () => {
     // Check duplicate
     const isDuplicate = generatedBatches.some(
       b => b.startDate === filters.startDate && b.endDate === filters.endDate && b.outlet === filters.outlet
@@ -318,13 +330,18 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
       })),
     };
 
-    onAddGeneratedBatch(newBatch);
-    setIsGenerateModalOpen(false);
-
-    setToastMessage(`Sukses! Rekap gaji periode ${periodLabel} berhasil digenerate (${formatRupiah(grandTotalSalary)} untuk ${payrollSummaries.length} karyawan).`);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 5000);
+    setIsSavingBatch(true);
+    try {
+      await onAddGeneratedBatch(newBatch);
+      setIsGenerateModalOpen(false);
+      setToastMessage(`Sukses! Rekap gaji periode ${periodLabel} berhasil digenerate (${formatRupiah(grandTotalSalary)} untuk ${payrollSummaries.length} karyawan).`);
+      setTimeout(() => setToastMessage(null), 5000);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Rekap gaji gagal disimpan.');
+      setTimeout(() => setToastMessage(null), 5000);
+    } finally {
+      setIsSavingBatch(false);
+    }
   };
 
   // Handle Export Excel (.csv)
@@ -586,6 +603,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
         summaries={payrollSummaries}
         grandTotal={grandTotalSalary}
         totalDays={totalAttendanceDays}
+        isSaving={isSavingBatch}
         onClose={() => setIsGenerateModalOpen(false)}
         onConfirmGenerate={handleConfirmGenerate}
       />
@@ -610,7 +628,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
               <div className="flex items-center gap-2">
                 <History className="w-5 h-5 text-[#F19012]" />
                 <h3 className="text-base font-bold text-[#171717]">
-                  Riwayat Generate Rekap Gaji
+                  Riwayat Rekap Gaji
                 </h3>
               </div>
               <button
@@ -645,6 +663,10 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
                       <div className="font-extrabold text-[#F19012] font-mono text-sm">
                         {formatRupiah(batch.grandTotal)}
                       </div>
+                      <button type="button" onClick={() => setBatchPendingDelete(batch)} title="Hapus Rekap" aria-label="Hapus rekap payroll"
+                        className="p-2 text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-lg transition-colors cursor-pointer">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 ))
@@ -659,6 +681,38 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
               >
                 Tutup
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {batchPendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-neutral-900/50 backdrop-blur-xs animate-fadeIn">
+          <div role="dialog" aria-modal="true" aria-labelledby="delete-payroll-title" className="w-full max-w-md bg-white rounded-2xl border border-neutral-200 shadow-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-neutral-200">
+              <h3 id="delete-payroll-title" className="text-base font-bold text-[#171717]">Hapus Rekap Gaji?</h3>
+              <p className="mt-1.5 text-xs leading-relaxed text-neutral-600">Apakah Anda yakin ingin menghapus rekap gaji periode {batchPendingDelete.periodLabel}? Tindakan ini tidak dapat dibatalkan.</p>
+            </div>
+            <div className="p-5 space-y-2 text-xs">
+              <div className="flex justify-between gap-4"><span className="text-neutral-500">Periode</span><strong className="text-right text-neutral-800">{batchPendingDelete.periodLabel}</strong></div>
+              <div className="flex justify-between gap-4"><span className="text-neutral-500">Jumlah karyawan</span><strong className="text-neutral-800">{batchPendingDelete.totalEmployees} orang</strong></div>
+              <div className="flex justify-between gap-4"><span className="text-neutral-500">Total gaji</span><strong className="text-neutral-800">{formatRupiah(batchPendingDelete.grandTotal)}</strong></div>
+            </div>
+            <div className="px-5 py-3 border-t border-neutral-200 bg-neutral-50 flex justify-end gap-2">
+              <button type="button" onClick={() => setBatchPendingDelete(null)} className="px-4 py-2 bg-white border border-neutral-200 text-neutral-700 text-xs font-semibold rounded-lg hover:bg-neutral-100 cursor-pointer">Batal</button>
+              <button type="button" disabled={isDeletingBatch} onClick={async () => {
+                setIsDeletingBatch(true);
+                try {
+                  await onDeleteGeneratedBatch(batchPendingDelete.id);
+                  setBatchPendingDelete(null);
+                  setToastMessage('Rekap gaji berhasil dihapus.');
+                  setTimeout(() => setToastMessage(null), 4500);
+                } catch (error) {
+                  setToastMessage(error instanceof Error ? error.message : 'Rekap gaji gagal dihapus. Silakan coba lagi.');
+                  setTimeout(() => setToastMessage(null), 4500);
+                } finally {
+                  setIsDeletingBatch(false);
+                }
+              }} className="px-4 py-2 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700 disabled:opacity-60 disabled:cursor-wait cursor-pointer">{isDeletingBatch ? 'Menghapus…' : 'Hapus Rekap'}</button>
             </div>
           </div>
         </div>

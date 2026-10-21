@@ -6,8 +6,8 @@ interface AttendancePageProps {
   employees: Employee[];
   outlets: OutletItem[];
   attendanceRecords: AttendanceRecord[];
-  onClockIn: (employeeId: string, outlet: Outlet, timeStr: string) => void;
-  onClockOut: (employeeId: string, outlet: Outlet, timeStr: string) => void;
+  onClockIn: (employeeId: string, outlet: Outlet, timeStr: string) => Promise<void>;
+  onClockOut: (employeeId: string, outlet: Outlet, timeStr: string) => Promise<void>;
 }
 
 export const AttendancePage: React.FC<AttendancePageProps> = ({

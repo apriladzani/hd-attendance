@@ -1,17 +1,18 @@
 import React, { useState } from 'react';
 import { Lock, KeyRound, AlertCircle, ShieldAlert } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+
 interface PinAccessProps {
-  adminPin?: string;
-  onUnlock: () => void;
+  onUnlock: (pin: string) => void;
 }
 
-export const PinAccess: React.FC<PinAccessProps> = ({ adminPin = '1234', onUnlock }) => {
+export const PinAccess: React.FC<PinAccessProps> = ({ onUnlock }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!pin.trim()) {
       setError('Silakan masukkan PIN admin.');
@@ -19,16 +20,24 @@ export const PinAccess: React.FC<PinAccessProps> = ({ adminPin = '1234', onUnloc
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
+    try {
+      const response = await fetch(`${API_BASE}/api/admin-pin/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin_code: pin }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'PIN admin salah. Silakan coba lagi.');
+      setError('');
+      onUnlock(pin);
+    } catch (err) {
+      setError(err instanceof Error && err.message.includes('Failed to fetch')
+        ? 'Server tidak dapat dihubungi. Periksa koneksi backend.'
+        : err instanceof Error ? err.message : 'Verifikasi PIN gagal.');
+      setPin('');
+    } finally {
       setIsSubmitting(false);
-      if (pin === adminPin) {
-        setError('');
-        onUnlock();
-      } else {
-        setError('PIN admin salah. Silakan coba lagi.');
-        setPin('');
-      }
-    }, 250);
+    }
   };
 
   const handleKeyPress = (num: string) => {

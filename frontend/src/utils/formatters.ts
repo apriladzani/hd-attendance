@@ -65,10 +65,14 @@ export function getPayrollDateRange(period: 'harian' | 'mingguan' | 'bulanan') {
 }
 
 export function formatWIBTime(date: Date = new Date()): string {
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-  return `${hours}:${minutes}:${seconds} WIB`;
+  const time = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(date);
+  return `${time} WIB`;
 }
 
 export function exportPayrollToCSV(

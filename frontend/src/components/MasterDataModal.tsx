@@ -21,9 +21,9 @@ interface MasterDataModalProps {
   employees: Employee[];
   positions: PositionLevel[];
   onClose: () => void;
-  onUpdateOutlets: (outlets: OutletItem[]) => void;
-  onUpdateEmployees: (employees: Employee[]) => void;
-  onUpdatePositions: (positions: PositionLevel[]) => void;
+  onUpdateOutlets: (outlets: OutletItem[]) => Promise<void>;
+  onUpdateEmployees: (employees: Employee[]) => Promise<void>;
+  onUpdatePositions: (positions: PositionLevel[]) => Promise<void>;
   onToast: (msg: string) => void;
 }
 
@@ -47,7 +47,7 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
   const [editingOutletName, setEditingOutletName] = useState('');
   const [outletError, setOutletError] = useState('');
 
-  const handleAddOutlet = (e: React.FormEvent) => {
+  const handleAddOutlet = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newOutletName.trim();
     if (!cleanName) {
@@ -63,31 +63,39 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
       id: cleanName,
       name: cleanName
     };
-    onUpdateOutlets([...outlets, newOutlet]);
+    try {
+      await onUpdateOutlets([...outlets, newOutlet]);
+    } catch (error) {
+      setOutletError(error instanceof Error ? error.message : 'Outlet gagal disimpan.');
+      return;
+    }
     setNewOutletName('');
     setOutletError('');
     onToast(`Outlet "${cleanName}" berhasil ditambahkan.`);
   };
 
-  const handleSaveEditOutlet = (id: string) => {
+  const handleSaveEditOutlet = async (id: string) => {
     const cleanName = editingOutletName.trim();
     if (!cleanName) return;
 
-    onUpdateOutlets(outlets.map(o => o.id === id ? { ...o, name: cleanName, id: cleanName } : o));
-    // Also update employees assigned to this outlet
-    onUpdateEmployees(employees.map(e => e.outlet === id ? { ...e, outlet: cleanName } : e));
+    try {
+      await onUpdateOutlets(outlets.map(o => o.id === id ? { ...o, name: cleanName } : o));
+    } catch (error) {
+      setOutletError(error instanceof Error ? error.message : 'Nama outlet gagal disimpan.');
+      return;
+    }
     setEditingOutletId(null);
     onToast(`Nama outlet diperbarui menjadi "${cleanName}".`);
   };
 
-  const handleDeleteOutlet = (id: string, name: string) => {
-    const inUseCount = employees.filter(e => e.outlet === id || e.outlet === name).length;
-    if (inUseCount > 0) {
-      alert(`Outlet "${name}" tidak dapat dihapus karena masih memiliki ${inUseCount} karyawan penugasan.`);
-      return;
-    }
+  const handleDeleteOutlet = async (id: string, name: string) => {
     if (confirm(`Yakin ingin menghapus outlet "${name}"?`)) {
-      onUpdateOutlets(outlets.filter(o => o.id !== id));
+      try {
+        await onUpdateOutlets(outlets.filter(o => o.id !== id));
+      } catch (error) {
+        setOutletError(error instanceof Error ? error.message : 'Outlet gagal dihapus.');
+        return;
+      }
       onToast(`Outlet "${name}" berhasil dihapus.`);
     }
   };
@@ -100,7 +108,9 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
   const [empNip, setEmpNip] = useState('');
   const [empName, setEmpName] = useState('');
   const [empPositionId, setEmpPositionId] = useState(positions[0]?.id || '');
+  const [empStatus, setEmpStatus] = useState<Employee['status']>('active');
   const [empError, setEmpError] = useState('');
+  const [isSavingEmp, setIsSavingEmp] = useState(false);
 
   const handleStartAddEmployee = () => {
     // Generate next NIP suggestion (HD-011, etc)
@@ -117,6 +127,7 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
     setEmpNip(nextNip);
     setEmpName('');
     setEmpPositionId(positions[0]?.id || '');
+    setEmpStatus('active');
     setEmpError('');
     setIsAddingEmp(true);
     setEditingEmpId(null);
@@ -126,35 +137,50 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
     setEmpNip(emp.nip);
     setEmpName(emp.name);
     setEmpPositionId(emp.positionId);
+    setEmpStatus(emp.status);
     setEmpError('');
     setEditingEmpId(emp.id);
     setIsAddingEmp(false);
   };
 
-  const handleSaveEmployee = (e: React.FormEvent) => {
+  const handleSaveEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingEmp) return;
     if (!empNip.trim() || !empName.trim()) {
       setEmpError('NIP dan Nama Karyawan wajib diisi.');
       return;
     }
 
-    const pos = positions.find(p => p.id === empPositionId) || positions[0];
+    const pos = positions.find(p => p.id === empPositionId);
+    if (!pos) {
+      setEmpError('Posisi / level belum tersedia.');
+      return;
+    }
+    setIsSavingEmp(true);
 
     if (editingEmpId) {
       // Update employee
-      onUpdateEmployees(employees.map(e => {
+      const updatedEmployees = employees.map(e => {
         if (e.id === editingEmpId) {
           return {
             ...e,
             nip: empNip.trim(),
             name: empName.trim(),
-            outlet: e.outlet || outlets[0]?.id || 'Cisalak',
             positionId: pos.id,
             positionName: pos.name,
+            status: empStatus,
           };
         }
         return e;
-      }));
+      });
+      try {
+        await onUpdateEmployees(updatedEmployees);
+      } catch (error) {
+        setEmpError(error instanceof Error ? error.message : 'Data karyawan gagal disimpan.');
+        setIsSavingEmp(false);
+        return;
+      }
+      setIsSavingEmp(false);
       setEditingEmpId(null);
       onToast(`Data karyawan ${empName} berhasil diperbarui.`);
     } else {
@@ -164,21 +190,32 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
         id: newId,
         nip: empNip.trim(),
         name: empName.trim(),
-        outlet: outlets[0]?.id || 'Cisalak',
         positionId: pos.id,
         positionName: pos.name,
+        status: empStatus,
         joinDate: new Date().toISOString().slice(0, 10),
       };
-      onUpdateEmployees([...employees, newEmp]);
+      try {
+        await onUpdateEmployees([...employees, newEmp]);
+      } catch (error) {
+        setEmpError(error instanceof Error ? error.message : 'Data karyawan gagal disimpan.');
+        setIsSavingEmp(false);
+        return;
+      }
+      setIsSavingEmp(false);
       setIsAddingEmp(false);
       onToast(`Karyawan baru ${empName} (${pos.name}) berhasil didaftarkan.`);
     }
   };
 
-  const handleDeleteEmployee = (emp: Employee) => {
+  const handleDeleteEmployee = async (emp: Employee) => {
     if (confirm(`Yakin ingin menghapus karyawan "${emp.name}" (${emp.nip})?`)) {
-      onUpdateEmployees(employees.filter(e => e.id !== emp.id));
-      onToast(`Karyawan ${emp.name} berhasil dihapus.`);
+      try {
+        await onUpdateEmployees(employees.filter(e => e.id !== emp.id));
+        onToast(`Karyawan ${emp.name} berhasil dihapus.`);
+      } catch (error) {
+        onToast(error instanceof Error ? error.message : 'Karyawan gagal dihapus.');
+      }
     }
   };
 
@@ -190,7 +227,7 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
   const [editingPosWage, setEditingPosWage] = useState<number>(50000);
   const [posError, setPosError] = useState('');
 
-  const handleAddPosition = (e: React.FormEvent) => {
+  const handleAddPosition = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newPosName.trim();
     if (!cleanName) {
@@ -207,35 +244,47 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
       name: cleanName,
       dailyWage: Number(newPosWage) || 50000
     };
-    onUpdatePositions([...positions, newPos]);
+    try {
+      await onUpdatePositions([...positions, newPos]);
+    } catch (error) {
+      setPosError(error instanceof Error ? error.message : 'Posisi gagal disimpan.');
+      return;
+    }
     setNewPosName('');
     setNewPosWage(50000);
     setPosError('');
     onToast(`Level/Posisi "${cleanName}" (${formatRupiah(newPos.dailyWage)}/hari) berhasil ditambahkan.`);
   };
 
-  const handleSaveEditPosition = (posId: string) => {
+  const handleSaveEditPosition = async (posId: string) => {
     const cleanName = editingPosName.trim();
     if (!cleanName) return;
 
     const wage = Number(editingPosWage) || 50000;
-    onUpdatePositions(positions.map(p => p.id === posId ? { ...p, name: cleanName, dailyWage: wage } : p));
+    try {
+      await onUpdatePositions(positions.map(p => p.id === posId ? { ...p, name: cleanName, dailyWage: wage } : p));
+    } catch (error) {
+      setPosError(error instanceof Error ? error.message : 'Posisi gagal diperbarui.');
+      return;
+    }
     
-    // Also update positionName cache for employees
-    onUpdateEmployees(employees.map(e => e.positionId === posId ? { ...e, positionName: cleanName } : e));
-
     setEditingPosId(null);
     onToast(`Level "${cleanName}" diperbarui: ${formatRupiah(wage)}/hari. Seluruh perhitungan gaji telah disinkronkan.`);
   };
 
-  const handleDeletePosition = (pos: PositionLevel) => {
+  const handleDeletePosition = async (pos: PositionLevel) => {
     const inUseCount = employees.filter(e => e.positionId === pos.id).length;
     if (inUseCount > 0) {
       alert(`Level/Posisi "${pos.name}" tidak dapat dihapus karena masih digunakan oleh ${inUseCount} karyawan.`);
       return;
     }
     if (confirm(`Yakin ingin menghapus level/posisi "${pos.name}"?`)) {
-      onUpdatePositions(positions.filter(p => p.id !== pos.id));
+      try {
+        await onUpdatePositions(positions.filter(p => p.id !== pos.id));
+      } catch (error) {
+        setPosError(error instanceof Error ? error.message : 'Posisi gagal dihapus.');
+        return;
+      }
       onToast(`Level "${pos.name}" berhasil dihapus.`);
     }
   };
@@ -434,7 +483,7 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
-                    Daftar Karyawan (Format: NIP, Nama, Level/Posisi)
+                    Daftar Karyawan (NIP, Nama, Posisi/Level, Status)
                   </h4>
                   <p className="text-[11px] text-neutral-500">
                     Karyawan yang terdaftar langsung otomatis muncul pada form absensi.
@@ -478,7 +527,7 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
                     </p>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     {/* NIP */}
                     <div>
                       <label className="block text-[11px] font-bold text-neutral-700 uppercase mb-1">
@@ -517,11 +566,24 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
                         onChange={(e) => setEmpPositionId(e.target.value)}
                         className="w-full text-xs px-3 py-2 bg-white border border-neutral-300 rounded-lg text-neutral-900 focus:outline-none focus:border-[#D31027]"
                       >
+                        {empPositionId && !positions.some(position => position.id === empPositionId) && (
+                          <option value={empPositionId}>
+                            Posisi saat ini: {employees.find(employee => employee.id === editingEmpId)?.positionName || 'pilih posisi'}
+                          </option>
+                        )}
                         {positions.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name} ({formatRupiah(p.dailyWage)}/hari)
                           </option>
                         ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-neutral-700 uppercase mb-1">Status Karyawan *</label>
+                      <select value={empStatus} onChange={event => setEmpStatus(event.target.value as Employee['status'])}
+                        className="w-full text-xs px-3 py-2 bg-white border border-neutral-300 rounded-lg text-neutral-900 focus:outline-none focus:border-[#D31027]">
+                        <option value="active">Aktif</option>
+                        <option value="inactive">Nonaktif</option>
                       </select>
                     </div>
                   </div>
@@ -539,9 +601,10 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
                     </button>
                     <button
                       type="submit"
+                      disabled={isSavingEmp}
                       className="px-4 py-1.5 bg-[#D31027] hover:bg-[#B80D21] text-white text-xs font-bold rounded-lg shadow-xs"
                     >
-                      {editingEmpId ? 'Simpan Perubahan' : 'Simpan Karyawan'}
+                      {isSavingEmp ? 'Menyimpan…' : editingEmpId ? 'Simpan Perubahan' : 'Simpan Karyawan'}
                     </button>
                   </div>
                 </form>
@@ -549,29 +612,35 @@ export const MasterDataModal: React.FC<MasterDataModalProps> = ({
 
               {/* Employees Table */}
               <div className="border border-neutral-200 rounded-xl overflow-x-auto">
-                <table className="w-full text-left text-xs min-w-[560px]">
+                <table className="w-full text-left text-xs min-w-[700px]">
                   <thead className="bg-neutral-100 text-neutral-700 font-semibold border-b border-neutral-200">
                     <tr>
-                      <th className="py-2.5 px-3.5 w-10 text-center">No</th>
+                      <th className="py-2.5 px-3.5 w-16 text-center">ID</th>
                       <th className="py-2.5 px-3.5">NIP</th>
                       <th className="py-2.5 px-3.5">Nama Karyawan</th>
                       <th className="py-2.5 px-3.5">Level / Posisi</th>
+                      <th className="py-2.5 px-3.5 text-center">Status</th>
                       <th className="py-2.5 px-3.5 text-right">Gaji Harian</th>
                       <th className="py-2.5 px-3.5 text-center w-24">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
-                    {employees.map((emp, idx) => {
+                    {employees.map((emp) => {
                       const pos = positions.find(p => p.id === emp.positionId) || { dailyWage: 50000, name: emp.positionName };
 
                       return (
                         <tr key={emp.id} className="hover:bg-neutral-50/50">
-                          <td className="py-2.5 px-3.5 text-center text-neutral-500 font-mono">{idx + 1}</td>
+                          <td className="py-2.5 px-3.5 text-center text-neutral-500 font-mono">{emp.id}</td>
                           <td className="py-2.5 px-3.5 font-mono font-bold text-neutral-800">{emp.nip}</td>
                           <td className="py-2.5 px-3.5 font-semibold text-neutral-900">{emp.name}</td>
                           <td className="py-2.5 px-3.5 text-neutral-800">
                             <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-800 font-medium border border-neutral-200/80">
                               {pos.name}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3.5 text-center">
+                            <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${emp.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
+                              {emp.status === 'active' ? 'Aktif' : 'Nonaktif'}
                             </span>
                           </td>
                           <td className="py-2.5 px-3.5 text-right font-mono tabular-nums font-semibold text-[#D31027]">

@@ -15,9 +15,9 @@ export interface Employee {
   id: string;
   nip: string; // Format: NIP (Nomor Induk Pegawai)
   name: string;
-  outlet: string;
   positionId: string;
   positionName: string; // Level / Posisi
+  status: 'active' | 'inactive';
   phone?: string;
   joinDate?: string;
 }
@@ -27,6 +27,7 @@ export type AttendanceStatus = 'Belum Absen' | 'Sedang Bekerja' | 'Sudah Pulang'
 export interface AttendanceRecord {
   id: string;
   employeeId: string;
+  outletId?: string;
   nip: string;
   employeeName: string;
   outlet: string;
