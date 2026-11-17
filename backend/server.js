@@ -1,12 +1,26 @@
 import express from 'express';
 import cors from 'cors';
+import swaggerUi from 'swagger-ui-express';
 import { pool, ensureDatabase } from './db.js';
+import { requireApiKey, hasApiKeysConfigured } from './apiKey.js';
+import { buildOpenApiSpec } from './openapi.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
 
 app.use(cors());
 app.use(express.json());
+
+// API documentation (public). The spec itself contains no secrets.
+const openApiSpec = buildOpenApiSpec({ port: PORT });
+app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+  customSiteTitle: 'HD Attendance & Payroll API',
+  swaggerOptions: { persistAuthorization: true },
+}));
+
+// Every /api route below requires a valid X-API-Key header (except /api/health).
+app.use('/api', requireApiKey);
 
 async function validateAdminPin(req, res, pinOverride) {
   const providedPin = String(pinOverride ?? req.get('x-admin-pin') ?? '').trim();
@@ -214,27 +228,24 @@ app.post('/api/admin-pin/verify', async (req, res) => {
 });
 
 app.put('/api/admin-pin', async (req, res) => {
-  const { pin_code } = req.body || {};
-
-  if (!pin_code || String(pin_code).trim().length === 0) {
-    return res.status(400).json({ error: 'pin_code is required' });
-  }
+  const newPin = String(req.body?.pin_code ?? '').trim();
+  const currentPin = req.get('x-admin-pin') ?? req.body?.current_pin;
 
   try {
-    const [result] = await pool.execute(
-      'UPDATE admin_pins SET pin_code = ?, updated_at = CURRENT_TIMESTAMP WHERE is_active = TRUE ORDER BY id DESC LIMIT 1',
-      [String(pin_code).trim()]
-    );
+    // The current PIN must be proven before it can be replaced.
+    // Lost PIN? Reset it from the server shell: `npm run reset-pin` (see scripts/reset-pin.js).
+    if (!await validateAdminPin(req, res, currentPin)) return;
 
-    if (result.affectedRows === 0) {
-      const [insertResult] = await pool.execute(
-        'INSERT INTO admin_pins (pin_code, is_active) VALUES (?, TRUE)',
-        [String(pin_code).trim()]
-      );
-      return res.json({ success: true, id: insertResult.insertId, pin_code: String(pin_code).trim() });
+    if (!/^\d{4,12}$/.test(newPin)) {
+      return res.status(400).json({ error: 'PIN baru harus 4–12 digit angka.' });
     }
 
-    res.json({ success: true, updated: result.affectedRows, pin_code: String(pin_code).trim() });
+    const [result] = await pool.execute(
+      'UPDATE admin_pins SET pin_code = ?, updated_at = CURRENT_TIMESTAMP WHERE is_active = TRUE ORDER BY id DESC LIMIT 1',
+      [newPin]
+    );
+
+    res.json({ success: true, updated: result.affectedRows });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update admin pin', detail: error.message });
   }
@@ -580,9 +591,19 @@ app.post('/api/payroll', async (req, res) => {
 });
 
 try {
-  await ensureDatabase();
+  if (process.env.DB_AUTO_MIGRATE === 'false') {
+    // Read-only startup: only confirm the DB is reachable. No CREATE/ALTER/INSERT/UPDATE runs.
+    await pool.query('SELECT 1');
+    console.log('DB_AUTO_MIGRATE=false: startup schema/seed routines skipped.');
+  } else {
+    await ensureDatabase();
+  }
   app.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
+    console.log(`API docs available at http://localhost:${PORT}/docs`);
+    if (!hasApiKeysConfigured()) {
+      console.warn('WARNING: API_KEYS belum diset di backend/.env — semua endpoint /api akan menolak request (503).');
+    }
   });
 } catch (error) {
   console.error('MySQL connection failed. Make sure MySQL Workbench server is running and the credentials in .env are correct.');

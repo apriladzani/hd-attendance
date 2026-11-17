@@ -17,7 +17,7 @@ import { AttendancePage } from './components/AttendancePage';
 import { PinAccess } from './components/PinAccess';
 import { PayrollPage } from './components/PayrollPage';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+import { API_BASE, apiFetch } from './utils/api';
 
 const normalizeEmployee = (row: any, positions: PositionLevel[] = []): Employee => ({
   id: String(row.id ?? row.employee_id ?? row.employeeCode ?? row.employee_code ?? ''),
@@ -120,10 +120,10 @@ export default function App() {
     const loadFromBackend = async () => {
       try {
         const [employeeRes, attendanceRes, outletRes, positionRes] = await Promise.all([
-          fetch(`${API_BASE}/api/employees`),
-          fetch(`${API_BASE}/api/attendance`),
-          fetch(`${API_BASE}/api/outlets`),
-          fetch(`${API_BASE}/api/positions`),
+          apiFetch(`${API_BASE}/api/employees`),
+          apiFetch(`${API_BASE}/api/attendance`),
+          apiFetch(`${API_BASE}/api/outlets`),
+          apiFetch(`${API_BASE}/api/positions`),
         ]);
 
         let loadedPositions = positions;
@@ -180,7 +180,7 @@ export default function App() {
     let active = true;
     const loadPayrollBatches = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/payroll-batches`, {
+        const response = await apiFetch(`${API_BASE}/api/payroll-batches`, {
           headers: { 'x-admin-pin': adminPin },
         });
         const data = await response.json().catch(() => null);
@@ -209,7 +209,7 @@ export default function App() {
     const request = async (url: string, method: string, payload?: unknown) => {
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await apiFetch(url, {
           method,
           headers: { 'Content-Type': 'application/json' },
           ...(payload ? { body: JSON.stringify(payload) } : {}),
@@ -252,7 +252,7 @@ export default function App() {
       setEmployees(refreshed.map((row: any) => normalizeEmployee(row, positions)));
     } catch (error) {
       try {
-        const refreshed = await fetch(`${API_BASE}/api/employees`);
+        const refreshed = await apiFetch(`${API_BASE}/api/employees`);
         if (refreshed.ok) setEmployees((await refreshed.json()).map((row: any) => normalizeEmployee(row, positions)));
       } catch {
         // Keep current UI state when the backend is unreachable.
@@ -294,7 +294,7 @@ export default function App() {
 
     try {
       const isPersisted = /^\d+$/.test(localRecord.id);
-      const response = await fetch(isPersisted
+      const response = await apiFetch(isPersisted
         ? `${API_BASE}/api/attendance/${encodeURIComponent(localRecord.id)}`
         : `${API_BASE}/api/attendance`, {
         method: isPersisted ? 'PUT' : 'POST',
@@ -372,7 +372,7 @@ export default function App() {
 
     try {
       const isPersisted = /^\d+$/.test(localRecordId);
-      const response = await fetch(isPersisted
+      const response = await apiFetch(isPersisted
         ? `${API_BASE}/api/attendance/${encodeURIComponent(localRecordId)}`
         : `${API_BASE}/api/attendance`, {
         method: isPersisted ? 'PUT' : 'POST',
@@ -434,7 +434,7 @@ export default function App() {
     if (/^\d+$/.test(recordId)) {
       let response: Response;
       try {
-        response = await fetch(`${API_BASE}/api/attendance/${encodeURIComponent(recordId)}`, {
+        response = await apiFetch(`${API_BASE}/api/attendance/${encodeURIComponent(recordId)}`, {
           method: 'DELETE',
         });
       } catch {
@@ -460,7 +460,7 @@ export default function App() {
   const handleAddGeneratedBatch = async (batch: GeneratedPayrollRecord) => {
     let response: Response;
     try {
-      response = await fetch(`${API_BASE}/api/payroll-batches`, {
+      response = await apiFetch(`${API_BASE}/api/payroll-batches`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-pin': adminPin },
         body: JSON.stringify(batch),
@@ -476,7 +476,7 @@ export default function App() {
   const handleDeleteGeneratedBatch = async (batchId: string) => {
     let response: Response;
     try {
-      response = await fetch(`${API_BASE}/api/payroll-batches/${encodeURIComponent(batchId)}`, {
+      response = await apiFetch(`${API_BASE}/api/payroll-batches/${encodeURIComponent(batchId)}`, {
         method: 'DELETE',
         headers: { 'x-admin-pin': adminPin },
       });
@@ -503,7 +503,7 @@ export default function App() {
     const save = async (url: string, method: string, name?: string) => {
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await apiFetch(url, {
           method,
           headers: { 'Content-Type': 'application/json' },
           ...(name ? { body: JSON.stringify({ name }) } : {}),
@@ -526,7 +526,7 @@ export default function App() {
     for (const outlet of updated) {
       await save(`${API_BASE}/api/outlets/${encodeURIComponent(outlet.id)}`, 'PUT', outlet.name);
     }
-    const response = await fetch(`${API_BASE}/api/outlets`);
+    const response = await apiFetch(`${API_BASE}/api/outlets`);
     if (!response.ok) throw new Error('Data outlet gagal dimuat ulang setelah perubahan.');
     const rows = await response.json();
     setOutlets(Array.isArray(rows) ? rows.map(normalizeOutlet) : nextOutlets);
@@ -547,7 +547,7 @@ export default function App() {
     const save = async (url: string, method: string, position?: PositionLevel) => {
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await apiFetch(url, {
           method,
           headers: { 'Content-Type': 'application/json' },
           ...(position ? { body: JSON.stringify({ name: position.name, dailyWage: position.dailyWage }) } : {}),
@@ -570,8 +570,8 @@ export default function App() {
       await save(`${API_BASE}/api/positions/${encodeURIComponent(position.id)}`, 'PUT', position);
     }
     const [positionResponse, employeeResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/positions`),
-      fetch(`${API_BASE}/api/employees`),
+      apiFetch(`${API_BASE}/api/positions`),
+      apiFetch(`${API_BASE}/api/employees`),
     ]);
     if (!positionResponse.ok || !employeeResponse.ok) {
       throw new Error('Data posisi atau karyawan gagal dimuat ulang.');
@@ -583,18 +583,22 @@ export default function App() {
     }
   };
 
-  const handleUpdatePin = async (newPin: string) => {
-    setAdminPin(newPin);
-
+  const handleUpdatePin = async (newPin: string, oldPin: string) => {
+    let response: Response;
     try {
-      await fetch(`${API_BASE}/api/admin-pin`, {
+      response = await apiFetch(`${API_BASE}/api/admin-pin`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-admin-pin': oldPin },
         body: JSON.stringify({ pin_code: newPin }),
       });
     } catch {
-      // silent fail
+      throw new Error('Server tidak dapat dihubungi. PIN belum diganti.');
     }
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error || 'PIN gagal diganti.');
+    }
+    setAdminPin(newPin);
   };
 
   const handleUpdateEmployees = (nextEmployees: Employee[]) => {

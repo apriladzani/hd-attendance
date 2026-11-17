@@ -8,3 +8,6 @@ coverage/
 !.env.example
 !backend/.env.example
 !frontend/.env.example
+
+# Contains hosting panel API token — never commit
+.mcp.json

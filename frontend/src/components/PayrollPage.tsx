@@ -49,7 +49,7 @@ interface PayrollPageProps {
   onUpdateOutlets: (outlets: OutletItem[]) => Promise<void>;
   onUpdateEmployees: (employees: Employee[]) => Promise<void>;
   onUpdatePositions: (positions: PositionLevel[]) => Promise<void>;
-  onUpdatePin: (newPin: string) => void;
+  onUpdatePin: (newPin: string, oldPin: string) => Promise<void>;
 }
 
 export const PayrollPage: React.FC<PayrollPageProps> = ({
@@ -569,8 +569,8 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({
         isOpen={isChangePinModalOpen}
         currentPin={adminPin}
         onClose={() => setIsChangePinModalOpen(false)}
-        onUpdatePin={(newPin) => {
-          onUpdatePin(newPin);
+        onUpdatePin={async (newPin, oldPin) => {
+          await onUpdatePin(newPin, oldPin);
           setToastMessage('PIN Admin berhasil diperbarui! Silakan gunakan PIN baru saat mengakses kembali.');
           setTimeout(() => setToastMessage(null), 5000);
         }}

@@ -5,7 +5,7 @@ interface ChangePinModalProps {
   isOpen: boolean;
   currentPin: string;
   onClose: () => void;
-  onUpdatePin: (newPin: string) => void;
+  onUpdatePin: (newPin: string, oldPin: string) => Promise<void>;
 }
 
 export const ChangePinModal: React.FC<ChangePinModalProps> = ({
@@ -18,18 +18,19 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (oldPin !== currentPin) {
       setError('PIN lama yang Anda masukkan salah.');
       return;
     }
 
-    if (newPin.length < 4) {
-      setError('PIN baru minimal harus 4 digit angka.');
+    if (!/^\d{4,12}$/.test(newPin)) {
+      setError('PIN baru harus 4–12 digit angka.');
       return;
     }
 
@@ -38,7 +39,15 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({
       return;
     }
 
-    onUpdatePin(newPin);
+    setIsSaving(true);
+    try {
+      await onUpdatePin(newPin, oldPin);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'PIN gagal diganti.');
+      return;
+    } finally {
+      setIsSaving(false);
+    }
     setOldPin('');
     setNewPin('');
     setConfirmPin('');
@@ -146,10 +155,11 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-[#D31027] hover:bg-[#B80D21] text-white text-xs font-bold rounded-lg shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+              disabled={isSaving}
+              className="px-4 py-2 bg-[#D31027] hover:bg-[#B80D21] disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Check className="w-4 h-4" />
-              <span>Simpan PIN Baru</span>
+              <span>{isSaving ? 'Menyimpan…' : 'Simpan PIN Baru'}</span>
             </button>
           </div>
         </form>

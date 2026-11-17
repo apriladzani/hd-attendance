@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, KeyRound, AlertCircle, ShieldAlert } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface PinAccessProps {
   onUnlock: (pin: string) => void;
@@ -21,7 +21,7 @@ export const PinAccess: React.FC<PinAccessProps> = ({ onUnlock }) => {
 
     setIsSubmitting(true);
     try {
-      const response = await fetch(`${API_BASE}/api/admin-pin/verify`, {
+      const response = await apiFetch(`${API_BASE}/api/admin-pin/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin_code: pin }),
