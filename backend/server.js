@@ -12,12 +12,16 @@ app.use(cors());
 app.use(express.json());
 
 // API documentation (public). The spec itself contains no secrets.
+// Also mounted under /api because the hosting gateway only proxies /api/* to this backend.
 const openApiSpec = buildOpenApiSpec({ port: PORT });
-app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+const docsUi = swaggerUi.setup(openApiSpec, {
   customSiteTitle: 'HD Attendance & Payroll API',
   swaggerOptions: { persistAuthorization: true },
-}));
+});
+for (const base of ['', '/api']) {
+  app.get(`${base}/openapi.json`, (_req, res) => res.json(openApiSpec));
+  app.use(`${base}/docs`, swaggerUi.serve, docsUi);
+}
 
 // Every /api route below requires a valid X-API-Key header (except /api/health).
 app.use('/api', requireApiKey);

@@ -30,6 +30,8 @@ export function buildOpenApiSpec({ port } = {}) {
         'Klik tombol **Authorize** di kanan atas untuk mengisinya.',
         '',
         'Endpoint rekap gaji (`/api/payroll-batches`) juga memerlukan header `X-Admin-Pin`.',
+        '',
+        'Spesifikasi mentah: [`/api/openapi.json`](/api/openapi.json)',
       ].join('\n'),
     },
     servers: [
